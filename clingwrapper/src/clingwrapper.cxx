@@ -1431,7 +1431,16 @@ std::string Cppyy::GetMethodSignature(TCppMethod_t method, bool show_formal_args
         return sig.str();
     }
 
-    else return Cpp::GetFunctionSignature(method);
+    std::ostringstream sig;
+    sig << "(";
+    size_t args = Cpp::GetFunctionNumArgs(method);
+    for (size_t i = 0; i < args; i++) {
+        sig << Cppyy::GetMethodArgTypeAsString(method, i);
+        if (i != args -1)
+        sig << ", ";
+    }
+    sig << ")";
+    return sig.str();
 }
 
 std::string Cppyy::GetMethodPrototype(TCppMethod_t method, bool show_formal_args)
