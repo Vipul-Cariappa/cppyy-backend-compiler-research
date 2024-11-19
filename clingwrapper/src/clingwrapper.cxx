@@ -161,6 +161,13 @@ void push_tokens_from_string(char *s, std::vector <const char*> &tokens) {
     }
 }
 
+static inline
+bool is_number(const std::string& s)
+{
+    return !s.empty() && std::find_if(s.begin(), 
+        s.end(), [](unsigned char c) { return !std::isdigit(c); }) == s.end();
+}
+
 class ApplicationStarter {
   Cpp::TInterp_t Interp;
 public:
@@ -466,11 +473,43 @@ bool Cppyy::AppendTypesSlow(const std::string &name,
   // Add no new type if string is empty
   if (name.empty()) return true;
 
-  // Try going via Cppyy::GetType first.
-  if (Cppyy::TCppType_t type = GetType(name, /*enable_slow_lookup=*/true)) {
-    types.push_back(type);
-    return false;
+  // split types
+  size_t start_pos = 0;
+  size_t end_pos = 0;
+  size_t appended_count = 0;
+  bool flag = false;
+  while ((end_pos = name.find(",", start_pos)) != std::string::npos) {
+    std::string individual_type = name.substr(start_pos, end_pos - start_pos);
+    start_pos = end_pos + 1;
+    // Try going via Cppyy::GetType first.
+    if (Cppyy::TCppType_t type = GetType(individual_type, /*enable_slow_lookup=*/true)) {
+        const char *integral_value = nullptr;
+        if (is_number(individual_type))
+            integral_value = strdup(individual_type.c_str());
+        types.emplace_back(type, integral_value);
+        appended_count++;
+    } else {
+        flag = true;
+        start_pos = 0;
+        break;
+    }
   }
+
+  // Try going via Cppyy::GetType first.
+  std::string individual_type = name.substr(start_pos);
+  if (Cppyy::TCppType_t type = GetType(individual_type, /*enable_slow_lookup=*/true)) {
+    const char *integral_value = nullptr;
+    if (is_number(individual_type))
+        integral_value = strdup(individual_type.c_str());
+    types.emplace_back(type, integral_value);
+    if (!flag)
+        return false;
+  }
+
+  while (appended_count--) {
+    types.pop_back();
+  }
+
   // Else, we might have an entire expression such as int, double.
   static unsigned long long struct_count = 0;
   std::string code = "template<typename ...T> struct __Cppyy_AppendTypesSlow {};\n";
