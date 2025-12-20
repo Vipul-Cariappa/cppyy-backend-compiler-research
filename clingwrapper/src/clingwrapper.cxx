@@ -292,6 +292,10 @@ public:
                      " bool is_not_equal(const C1& c1, const C2& c2) { return "
                      "(bool)(c1 != c2); } }",
                      /*silent=*/false);
+        Cpp::Declare(R"(namespace __cppyy_internal {
+                        class UnknownType {};
+                        })",
+                     /*silent=*/false);
 
         // Define gCling when we run with clang-repl.
         // FIXME: We should get rid of all the uses of gCling as this seems to
@@ -544,7 +548,15 @@ Cppyy::TCppType_t Cppyy::GetRealType(TCppType_t type) {
 }
 
 Cppyy::TCppType_t Cppyy::GetPointerType(TCppType_t type) {
-  return Cpp::GetPointerType(type);
+  Cpp::ValueKind ref = Cpp::GetValueKind(type);
+  TCppType_t pointer_type = type;
+  if (ref != Cpp::ValueKind::None)
+    pointer_type = Cpp::GetPointerType(Cpp::GetNonReferenceType(type));
+  if (ref == Cpp::ValueKind::LValue)
+    return Cpp::GetReferencedType(pointer_type, false);
+  if (ref == Cpp::ValueKind::RValue)
+    return Cpp::GetReferencedType(pointer_type, true);
+  return pointer_type;
 }
 
 Cppyy::TCppType_t Cppyy::GetReferencedType(TCppType_t type, bool rvalue) {
@@ -603,16 +615,10 @@ bool split_comma_saparated_types(const std::string& name,
       break;
     }
     case '>': {
-      if (matching_angular_brackets > 0) {
-        types.push_back(
-            trim(trimed_name.substr(start_pos, end_pos - start_pos + 1)));
-        start_pos = end_pos + 1;
-      } else if (matching_angular_brackets < 1) {
+      if (matching_angular_brackets < 1) {
         types.clear();
         return false;
       }
-      start_pos++;
-      end_pos++;
       matching_angular_brackets--;
       break;
     }
@@ -639,7 +645,9 @@ Cpp::TCppScope_t GetEnumFromCompleteName(const std::string &name) {
 
 // returns true if no new type was added.
 bool Cppyy::AppendTypesSlow(const std::string& name,
-                            std::vector<Cpp::TemplateArgInfo>& types, Cppyy::TCppScope_t parent) {
+                            std::vector<Cpp::TemplateArgInfo>& types,
+                            Cppyy::TCppScope_t parent,
+                            bool append_unknown) {
 
   // Add no new type if string is empty
   if (name.empty())
@@ -696,8 +704,13 @@ bool Cppyy::AppendTypesSlow(const std::string& name,
     }
 
     if (!type) {
-      types.clear();
-      return true;
+      static Cppyy::TCppType_t unknown_type = Cpp::GetTypeFromScope(Cppyy::GetScope("__cppyy_internal::UnknownType"));
+      if (append_unknown) {
+        types.emplace_back(unknown_type);
+        continue;
+      } else {
+        return true;
+      }
     }
 
     if (is_integral(i))
@@ -1722,7 +1735,7 @@ bool Cppyy::IsStaticTemplate(TCppScope_t scope, const std::string& name)
 }
 
 Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
-    TCppScope_t scope, const std::string& name, const std::string& proto)
+    TCppScope_t scope, const std::string& name, const std::string& proto, bool include_non_templated)
 {
     std::string pureName;
     std::string explicit_params;
@@ -1742,6 +1755,11 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
         std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
         Cpp::GetClassTemplatedMethods(pureName, scope,
                                     unresolved_candidate_methods);
+        if (include_non_templated) {
+            auto fns = Cpp::GetFunctionsUsingName(scope, pureName);
+            for (auto i: fns)
+                unresolved_candidate_methods.push_back(i);
+        }
     }
     if (unresolved_candidate_methods.empty() && name.find("operator") == 0) {
         // try operators
@@ -1757,7 +1775,8 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
     {
         std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
         cppmeth = Cpp::BestOverloadFunctionMatch(
-        unresolved_candidate_methods, templ_params, arg_types);
+        unresolved_candidate_methods, templ_params, arg_types,
+        /*is_operator=*/false);
     }
 
     if (!cppmeth && unresolved_candidate_methods.size() == 1 &&
@@ -1772,6 +1791,54 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
 
     // if it fails, use Sema to propogate info about why it failed (DeductionInfo)
 
+}
+
+bool Cppyy::IsNonStaticMethod(Cppyy::TCppMethod_t func) {
+    return Cpp::IsMethod(func) && !Cpp::IsStaticMethod(func);
+}
+
+Cppyy::TCppMethod_t Cppyy::BestOverloadFunctionMatch(const std::vector<Cpp::TCppFunction_t> &candidates, const std::string &proto, TCppScope_t parent_scope, bool is_operator) {
+    std::vector<Cpp::TemplateArgInfo> arg_types;
+    std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
+    if (!proto.empty() && Cppyy::AppendTypesSlow(proto, arg_types, parent_scope, true)) return nullptr;
+    Cppyy::TCppMethod_t cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator);
+    Cppyy::TCppMethod_t potential_cppmeth = nullptr;
+    bool potential_cppmeth_ambiguous = false;
+    for (auto fn : candidates) {
+        size_t required_arg_count = Cpp::GetFunctionRequiredArgs(fn);
+        size_t arg_count = Cpp::GetFunctionNumArgs(fn);
+        if (arg_types.size() > arg_count || arg_types.size() < required_arg_count)
+            continue;
+
+        // we track potential_cppmeth based on number of args only
+        // and not the type of these arguments
+        if (!potential_cppmeth)
+            potential_cppmeth = fn;
+        else
+            potential_cppmeth_ambiguous = true;
+
+        size_t I = 0;
+        for (auto& arg: arg_types) {
+            Cpp::QualKind qual = Cpp::QualKind::None;
+            Cpp::ValueKind ref = Cpp::ValueKind::None;
+            bool pointer = false;
+            if (Cpp::IsEquivalentTypes(arg.m_Type, Cpp::GetFunctionArgType(fn, I), qual, ref, pointer) && pointer) {
+                arg.m_Type = Cppyy::GetPointerType(arg.m_Type);
+                if (!cppmeth) {
+                    cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator);
+                } else if (Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator)) {
+                    return nullptr; // ambiguous, raise diagnostic 
+                }
+            }
+            I++;
+        }
+    }
+
+    // proper argument type match failed
+    // trying improper argument length match
+    if (!cppmeth && !potential_cppmeth_ambiguous)
+        cppmeth = potential_cppmeth;
+    return cppmeth;
 }
 
 static inline std::string type_remap(const std::string& n1,
@@ -1794,6 +1861,9 @@ static inline std::string type_remap(const std::string& n1,
     }
     return n1;
 }
+
+bool Cppyy::IsOperator(Cppyy::TCppScope_t scope) { return Cpp::IsOperator(scope); }
+bool Cppyy::IsConversionOperator(Cppyy::TCppScope_t scope) { return Cpp::IsConversionOperator(scope); }
 
 void Cppyy::GetClassOperators(Cppyy::TCppScope_t klass,
                               const std::string& opname,
@@ -1867,7 +1937,8 @@ Cppyy::TCppMethod_t Cppyy::GetGlobalOperator(
         {
             std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
             cppmeth = Cpp::BestOverloadFunctionMatch(
-            unresolved_candidate_methods, {}, arg_types);
+            unresolved_candidate_methods, {}, arg_types,
+            /*is_operator=*/false);
         }
         if (cppmeth)
             return cppmeth;
