@@ -696,6 +696,9 @@ Cppyy::TCppType_t Cppyy::GetType(const std::string &name, bool enable_slow_looku
     if (auto type = Cpp::GetType(name))
         return type;
 
+    if (auto type = Cppyy::GetTypeFromScope(Cppyy::GetScope(name)))
+        return type;
+
     if (!enable_slow_lookup) {
         if (name.find("::") != std::string::npos)
             throw std::runtime_error("Calling Cppyy::GetType with qualified name '"
@@ -833,6 +836,7 @@ Cppyy::TCppScope_t Cppyy::GetScopeFromType(TCppType_t type)
 
 Cppyy::TCppType_t Cppyy::GetTypeFromScope(TCppScope_t klass)
 {
+    if (!klass) return klass;
     return Cpp::GetTypeFromScope(klass);
 }
 
