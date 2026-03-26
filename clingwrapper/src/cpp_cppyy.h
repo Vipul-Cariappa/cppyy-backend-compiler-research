@@ -84,6 +84,8 @@ namespace Cppyy {
     RPY_EXPORTED
     bool IsClassType(TCppType_t type);
     RPY_EXPORTED
+    bool IsInlineFunction(TCppType_t type);
+    RPY_EXPORTED
     bool IsPointerType(TCppType_t type);
     RPY_EXPORTED
     bool IsFunctionPointerType(TCppType_t type);
@@ -180,6 +182,11 @@ namespace Cppyy {
 
     RPY_EXPORTED
     TCppFuncAddr_t GetFunctionAddress(TCppMethod_t method, bool check_enabled=true);
+
+    RPY_EXPORTED
+    std::string GetScopeModule(TCppScope_t scope);
+    RPY_EXPORTED
+    std::string MangledNameOf(TCppScope_t scope);
 
 // // handling of function argument buffer --------------------------------------
     RPY_EXPORTED

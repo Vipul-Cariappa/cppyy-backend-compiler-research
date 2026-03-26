@@ -214,7 +214,7 @@ public:
                                             /*GpuArgs=*/{});
 #endif
 #else
-            Interp = Cpp::CreateInterpreter({"-std=c++17", "-march=native"},
+            Interp = Cpp::CreateInterpreter({"-std=c++17", "-march=native", "-O3"},
                                             /*GpuArgs=*/{});
 #endif
         }
@@ -567,6 +567,10 @@ bool Cppyy::IsClassType(TCppType_t type) {
 
 bool Cppyy::IsPointerType(TCppType_t type) {
     return Cpp::IsPointerType(type);
+}
+
+bool Cppyy::IsInlineFunction(TCppType_t type) {
+    return Cpp::IsInlineFunction(type);
 }
 
 bool Cppyy::IsFunctionPointerType(TCppType_t type) {
@@ -1149,6 +1153,15 @@ Cppyy::TCppFuncAddr_t Cppyy::GetFunctionAddress(TCppMethod_t method, bool check_
     return (TCppFuncAddr_t) Cpp::GetFunctionAddress(method);
 }
 
+std::string Cppyy::GetScopeModule(Cppyy::TCppScope_t scope) {
+    std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
+    return Cpp::GetLLVMMouleFor(scope, nullptr);
+}
+
+std::string Cppyy::MangledNameOf(Cppyy::TCppScope_t scope) {
+    std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
+    return Cpp::MangledNameOf(scope);
+}
 
 // handling of function argument buffer --------------------------------------
 void* Cppyy::AllocateFunctionArgs(size_t nargs)
