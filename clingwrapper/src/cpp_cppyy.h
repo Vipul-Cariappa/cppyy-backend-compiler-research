@@ -252,6 +252,8 @@ namespace Cppyy {
     RPY_EXPORTED
     bool        GetSmartPtrInfo(const std::string&, TCppType_t* raw, TCppMethod_t* deref);
     RPY_EXPORTED
+    bool        GetSmartPtrInfo(TCppScope_t, TCppType_t* raw, TCppMethod_t* deref);
+    RPY_EXPORTED
     void        AddSmartPtrType(const std::string&) { assert(0 && "AddSmartPtrType"); return; }
 
     RPY_EXPORTED
