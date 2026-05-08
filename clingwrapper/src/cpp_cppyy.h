@@ -321,15 +321,15 @@ namespace Cppyy {
     bool        ExistsMethodTemplate(TCppScope_t scope, const std::string& name);
     RPY_EXPORTED
     bool        IsTemplatedMethod(TCppMethod_t method);
-    RPY_EXPORTED
-    bool        IsStaticTemplate(TCppScope_t scope, const std::string& name);
+    // RPY_EXPORTED
+    // bool        IsStaticTemplate(TCppScope_t scope, const std::string& name);
     RPY_EXPORTED
     TCppMethod_t GetMethodTemplate(
-        TCppScope_t scope, const std::string& name, const std::string& proto, bool include_non_templated=false);
+        TCppScope_t scope, const std::string& name, const std::string& proto, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates, bool include_non_templated=false);
     RPY_EXPORTED
     bool IsNonStaticMethod(Cppyy::TCppMethod_t func);
     RPY_EXPORTED
-    Cppyy::TCppMethod_t BestOverloadFunctionMatch(const std::vector<Cpp::TCppFunction_t> &candidates, const std::string &proto, TCppScope_t parent_scope, bool is_operator);
+    Cppyy::TCppMethod_t BestOverloadFunctionMatch(const std::vector<Cpp::TCppFunction_t> &candidates, const std::string &proto, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates, TCppScope_t parent_scope = nullptr, bool is_operator = false);
     RPY_EXPORTED
     bool IsOperator(Cppyy::TCppScope_t scope);
     RPY_EXPORTED
@@ -339,7 +339,7 @@ namespace Cppyy {
                            std::vector<TCppScope_t>& operators);
     RPY_EXPORTED
     TCppMethod_t  GetGlobalOperator(
-        TCppType_t scope, const std::string& lc, const std::string& rc, const std::string& op);
+        TCppType_t scope, const std::string& lc, const std::string& rc, const std::string& op, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates);
 
 // method properties ---------------------------------------------------------
     RPY_EXPORTED

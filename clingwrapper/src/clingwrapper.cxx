@@ -1820,7 +1820,7 @@ bool Cppyy::IsStaticTemplate(TCppScope_t scope, const std::string& name)
 }
 
 Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
-    TCppScope_t scope, const std::string& name, const std::string& proto, bool include_non_templated)
+    TCppScope_t scope, const std::string& name, const std::string& proto, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates, bool include_non_templated)
 {
     std::string pureName;
     std::string explicit_params;
@@ -1856,14 +1856,14 @@ Cppyy::TCppMethod_t Cppyy::GetMethodTemplate(
     // CPyCppyy assumes that we attempt instantiation here
     std::vector<Cpp::TemplateArgInfo> arg_types;
     std::vector<Cpp::TemplateArgInfo> templ_params;
-    Cppyy::AppendTypesSlow(proto, arg_types, scope);
-    Cppyy::AppendTypesSlow(explicit_params, templ_params, scope);
+    Cppyy::AppendTypesSlow(proto, arg_types, scope, true);
+    Cppyy::AppendTypesSlow(explicit_params, templ_params, scope, true);
     Cppyy::TCppMethod_t cppmeth = nullptr;
     {
         std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
         cppmeth = Cpp::BestOverloadFunctionMatch(
         unresolved_candidate_methods, templ_params, arg_types,
-        /*is_operator=*/false);
+        ambiguous_candidates, /*is_operator=*/false);
     }
 
     if (!cppmeth && unresolved_candidate_methods.size() == 1 &&
@@ -1883,13 +1883,13 @@ bool Cppyy::IsNonStaticMethod(Cppyy::TCppMethod_t func) {
     return Cpp::IsMethod(func) && !Cpp::IsStaticMethod(func);
 }
 
-Cppyy::TCppMethod_t Cppyy::BestOverloadFunctionMatch(const std::vector<Cpp::TCppFunction_t> &candidates, const std::string &proto, TCppScope_t parent_scope, bool is_operator) {
+Cppyy::TCppMethod_t Cppyy::BestOverloadFunctionMatch(const std::vector<Cpp::TCppFunction_t> &candidates, const std::string &proto, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates, TCppScope_t parent_scope, bool is_operator) {
     std::vector<Cpp::TemplateArgInfo> arg_types;
     std::lock_guard<std::recursive_mutex> Lock(InterOpMutex);
 
     if (!proto.empty() && Cppyy::AppendTypesSlow(proto, arg_types, parent_scope, true)) return nullptr;
 
-    Cppyy::TCppMethod_t cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator);
+    Cppyy::TCppMethod_t cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, ambiguous_candidates, is_operator);
     if (cppmeth) return cppmeth;
 
     Cppyy::TCppMethod_t potential_cppmeth = nullptr;
@@ -1923,7 +1923,9 @@ Cppyy::TCppMethod_t Cppyy::BestOverloadFunctionMatch(const std::vector<Cpp::TCpp
             Cpp::ValueKind ref = Cpp::ValueKind::None;
             bool pointer = false;
             static Cppyy::TCppType_t string_type = Cppyy::GetRealType(Cppyy::GetTypeFromScope(Cppyy::GetScope("std::string")));
+            static Cppyy::TCppType_t wstring_type = Cppyy::GetRealType(Cppyy::GetTypeFromScope(Cppyy::GetScope("std::wstring")));
             static Cppyy::TCppType_t char_pointer_type = Cppyy::GetPointerType(Cppyy::GetType("char"));
+            static Cppyy::TCppType_t wchar_pointer_type = Cppyy::GetPointerType(Cppyy::GetType("wchar_t"));
             Cppyy::TCppType_t fn_arg_type = Cpp::GetFunctionArgType(fn, skipThis ? I - 1 : I);
             assert(string_type);
             Cppyy::TCppType_t old_type = nullptr;
@@ -1933,19 +1935,37 @@ Cppyy::TCppMethod_t Cppyy::BestOverloadFunctionMatch(const std::vector<Cpp::TCpp
                 arg.m_Type = Cppyy::GetPointerType(arg.m_Type);
                 if (ref != Cpp::ValueKind::None)
                     arg.m_Type = Cpp::GetNonReferenceType(arg.m_Type);
-            } else if ( // TODO: alow conversion with wchar
-                (Cpp::IsEquivalentTypes(string_type, arg.m_Type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(char_pointer_type, fn_arg_type, qual, ref, pointer)) && (Cpp::IsPointerType(fn_arg_type)))
-                || (Cpp::IsEquivalentTypes(string_type, fn_arg_type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(char_pointer_type, arg.m_Type, qual, ref, pointer)) && (Cpp::IsPointerType(arg.m_Type)))
-            ) {
-                // promote std::string to char* and vice-versa
+            } else if (Cpp::IsEquivalentTypes(string_type, arg.m_Type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(char_pointer_type, fn_arg_type, qual, ref, pointer)) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(fn_arg_type))))) {
+                // promote std::string to char*
                 old_type = arg.m_Type;
-                arg.m_Type = fn_arg_type;
+                arg.m_Type = char_pointer_type;
+            } else if (Cpp::IsEquivalentTypes(string_type, fn_arg_type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(char_pointer_type, arg.m_Type, qual, ref, pointer)) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(arg.m_Type))))) {
+                // promote char* to std::string
+                old_type = arg.m_Type;
+                arg.m_Type = string_type;
+            } else if (Cpp::IsEquivalentTypes(string_type, arg.m_Type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(wchar_pointer_type, fn_arg_type, qual, ref, pointer)) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(fn_arg_type))))) {
+                // promote std::string to wchar_t*
+                old_type = arg.m_Type;
+                arg.m_Type = wchar_pointer_type;
+            } else if (Cpp::IsEquivalentTypes(wstring_type, fn_arg_type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(wchar_pointer_type, arg.m_Type, qual, ref, pointer)) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(arg.m_Type))))) {
+                // promote wchar_t* to std::wstring
+                old_type = arg.m_Type;
+                arg.m_Type = wstring_type;
+            } else if (Cpp::IsEquivalentTypes(string_type, arg.m_Type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(wstring_type, fn_arg_type, qual, ref, pointer))) {
+                // promote std::string to std::wstring
+                old_type = arg.m_Type;
+                arg.m_Type = wstring_type;
+            // } else if (Cpp::IsEquivalentTypes(char_pointer_type, arg.m_Type, qual, ref, pointer) && (Cpp::IsEquivalentTypes(wstring_type, fn_arg_type, qual, ref, pointer)) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(arg.m_Type)))) && (Cpp::IsPointerType(Cpp::GetNonReferenceType(Cppyy::ResolveType(fn_arg_type))))) {
+            //     // promote char* to wchar_t*
+            //     old_type = arg.m_Type;
+            //     arg.m_Type = wstring_type;
             }
             if (old_type) {
                 if (!cppmeth) {
                     // FIXME: this call should happen outside the inner for loop?
-                    cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator);
-                } else if (Cppyy::TCppMethod_t new_meth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, is_operator); new_meth != cppmeth) {
+                    // FIXME: How to handle ambiguous_candidates in this case?
+                    cppmeth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, ambiguous_candidates, is_operator);
+                } else if (Cppyy::TCppMethod_t new_meth = Cpp::BestOverloadFunctionMatch(candidates, {}, arg_types, ambiguous_candidates, is_operator); new_meth != cppmeth) {
                     return nullptr; // ambiguous, raise diagnostic
                 }
                 arg.m_Type = old_type;
@@ -1993,7 +2013,7 @@ void Cppyy::GetClassOperators(Cppyy::TCppScope_t klass,
 }
 
 Cppyy::TCppMethod_t Cppyy::GetGlobalOperator(
-    TCppType_t scope, const std::string& lc, const std::string& rc, const std::string& opname)
+    TCppType_t scope, const std::string& lc, const std::string& rc, const std::string& opname, std::vector<Cpp::TCppFunction_t> &ambiguous_candidates)
 {
     std::string rc_type = type_remap(rc, lc);
     std::string lc_type = type_remap(lc, rc);
@@ -2026,7 +2046,7 @@ Cppyy::TCppMethod_t Cppyy::GetGlobalOperator(
             return nullptr;
     }
     Cppyy::TCppMethod_t cppmeth = Cpp::BestOverloadFunctionMatch(
-        overloads, {}, arg_types, true);
+        overloads, {}, arg_types, ambiguous_candidates, true);
     if (cppmeth)
         return cppmeth;
     return nullptr;
